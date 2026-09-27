@@ -1,0 +1,478 @@
+/* 电子书阅读器 — 由 ebook-maker 生成 */
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var BOOK = null;          // book.json
+  var pf = null;            // PageFlip 实例
+  var mode = null;          // 'landscape' | 'portrait'
+  var portraitMinW = 0;
+  var cur = 0;              // 当前页（0 基）
+  var autoTimer = null;
+  var soundOn = true;
+  var deferredInstall = null;
+  var ua = navigator.userAgent;
+  var isIOS = /iphone|ipad|ipod/i.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  var isWeChat = /MicroMessenger/i.test(ua);
+  var isQQ = /\sQQ\/|MQQBrowser.*\sQQ/i.test(ua);
+  var isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+  function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
+  var PREVIEW = window.__EB_FILES__ || null;   // 生成器内预览时，文件以 blob: 地址提供
+  function res(p) { return (PREVIEW && PREVIEW[p]) || p; }
+  function pageSrc(i) { return res('pages/' + (i + 1) + '.' + (BOOK.ext || 'jpg')); }
+  function thumbSrc(i) { return res('thumbs/' + (i + 1) + '.jpg'); }
+  function toast(msg) { var t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toast.t); toast.t = setTimeout(function () { t.classList.remove('show'); }, 1800); }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+
+  /* ---------- 启动 ---------- */
+  fetch(res('book.json'), { cache: 'no-cache' }).then(function (r) { return r.json(); }).then(function (b) {
+    BOOK = b;
+    document.title = b.title;
+    $('bookTitle').textContent = b.title;
+    $('installName').textContent = b.shortTitle || b.title;
+    $('slider').max = b.pages;
+    document.documentElement.style.setProperty('--ratio', b.width + '/' + b.height);
+    if (b.pdf) { b.pdf = res(b.pdf); $('downloadItem').hidden = false; }
+    soundOn = store('eb-sound') !== '0';
+    updateSoundLabel();
+    var start = readHash();
+    build(start);
+    buildThumbs();
+    $('loading').hidden = true;
+    setupInstall();
+  }).catch(function (e) {
+    $('loadingText').textContent = '加载失败：' + e.message;
+  });
+
+  if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol) && !PREVIEW) {
+    navigator.serviceWorker.register('./service-worker.js').catch(function () {});
+  }
+
+  /* ---------- 尺寸 / 构建 ---------- */
+  function layout() {
+    var wrap = $('bookWrap');
+    var W = wrap.clientWidth, H = wrap.clientHeight, r = BOOK.width / BOOK.height;
+    var pwL = Math.min(W / 2, H * r), pwP = Math.min(W, H * r);
+    var m = (W > H && pwL >= 0.5 * pwP && BOOK.pages > 1) ? 'landscape' : 'portrait';
+    var pw = Math.floor(m === 'landscape' ? pwL : pwP);
+    return { mode: m, bookW: m === 'landscape' ? pw * 2 : pw };
+  }
+
+  function build(startPage) {
+    var L = layout();
+    if (pf) { try { pf.destroy(); } catch (e) {} pf = null; }
+    var sizer = $('bookSizer');
+    if (!sizer) { sizer = document.createElement('div'); sizer.id = 'bookSizer'; $('bookWrap').innerHTML = ''; $('bookWrap').appendChild(sizer); }
+    sizer.style.width = L.bookW + 'px';
+    sizer.innerHTML = '<div class="stack l"></div><div class="stack r"></div><div id="book"></div>';
+    var book = $('book');
+    var els = [];
+    for (var i = 0; i < BOOK.pages; i++) {
+      var d = document.createElement('div');
+      d.className = 'page';
+      d.setAttribute('data-density', 'soft');   // 封面封底与内页一样柔性卷曲
+      var img = document.createElement('img');
+      img.alt = '第 ' + (i + 1) + ' 页';
+      img.setAttribute('data-i', i);
+      img.onload = measureTone;
+      d.appendChild(img);
+      var shade = document.createElement('div');   // 书脊阴影层（PageFlip 会重写 .page 的 style，所以变量放在子元素上）
+      shade.className = 'shade';
+      d.appendChild(shade);
+      if (tones[i]) applyTone(shade, tones[i]);
+      book.appendChild(d);
+      els.push(d);
+    }
+    mode = L.mode;
+    portraitMinW = Math.ceil(L.bookW / 2) + 1;
+    pf = new St.PageFlip(book, {
+      width: BOOK.width, height: BOOK.height, size: 'stretch',
+      minWidth: mode === 'landscape' ? 1 : portraitMinW, maxWidth: 5000,
+      minHeight: 1, maxHeight: 5000,
+      usePortrait: mode === 'portrait',
+      showCover: true, maxShadowOpacity: 0.85, flippingTime: 800,
+      mobileScrollSupport: false, startPage: Math.max(0, Math.min(startPage, BOOK.pages - 1)),
+      swipeDistance: 20
+    });
+    pf.loadFromHTML(els);
+    pf.on('flip', function (e) { onPage(e.data, true); });
+    pf.on('changeState', function (e) { if (e.data === 'flipping' || e.data === 'user_fold') preload(cur, 3); });
+    onPage(pf.getCurrentPageIndex(), false);
+  }
+
+  var resizeT;
+  window.addEventListener('resize', function () {
+    if (!pf) return;
+    var L = layout();
+    var sizer = $('bookSizer');
+    if (L.mode !== mode || (mode === 'portrait' && L.bookW >= 2 * portraitMinW - 2)) {
+      clearTimeout(resizeT);
+      resizeT = setTimeout(function () { build(cur); }, 150);
+    } else {
+      sizer.style.width = L.bookW + 'px';   // 先于 PageFlip 自身的 resize 监听执行
+    }
+  });
+
+  /* ---------- 书脊阴影：根据页面靠近书脊一侧的明暗自动调整 ---------- */
+  var tones = [];   // 每页 {l: 左边缘亮度, r: 右边缘亮度}，0 暗 ~ 1 亮
+  var toneCanvas = null;
+  function measureTone() {
+    var img = this, i = +img.getAttribute('data-i');
+    if (tones[i]) return;
+    try {
+      toneCanvas = toneCanvas || document.createElement('canvas');
+      var W = 40, H = 40; toneCanvas.width = W; toneCanvas.height = H;
+      var g = toneCanvas.getContext('2d', { willReadFrequently: true });
+      g.drawImage(img, 0, 0, W, H);
+      var lum = function (x0) {   // 取边缘 15% 宽的竖条平均亮度
+        var d = g.getImageData(x0, 0, 6, H).data, s = 0;
+        for (var k = 0; k < d.length; k += 4) s += 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2];
+        return s / (d.length / 4) / 255;
+      };
+      tones[i] = { l: lum(0), r: lum(W - 6) };
+      applyTone(img.parentNode.querySelector('.shade'), tones[i]);
+    } catch (e) {}
+  }
+  function applyTone(el, t) {
+    // 亮页：柔和的灰色阴影；暗页：更深的阴影 + 可见的纸面反光，才能看出是两张纸
+    ['l', 'r'].forEach(function (side) {
+      var v = t[side];
+      el.style.setProperty('--sa-' + side, (0.30 + (1 - v) * 0.35).toFixed(3));   // 阴影强度
+      el.style.setProperty('--ha-' + side, (0.08 + (1 - v) * 0.14).toFixed(3));   // 反光强度
+    });
+  }
+
+  /* 两侧书页厚度：随左右剩余页数变化 */
+  function updateStacks(sp) {
+    var l = document.querySelector('#bookSizer .stack.l'), r = document.querySelector('#bookSizer .stack.r');
+    if (!l || !r) return;
+    var left = mode === 'landscape' ? sp[0] : 0;
+    var right = BOOK.pages - 1 - sp[sp.length - 1];
+    var w = function (n) { return n <= 0 ? 0 : Math.min(10, 1.5 + n / 8); };
+    l.style.width = w(left) + 'px'; r.style.width = w(right) + 'px';
+  }
+
+  /* ---------- 翻页状态 ---------- */
+  function spread(i) {
+    if (mode !== 'landscape' || i === 0) return [i];
+    var s = i % 2 === 1 ? i : i - 1;
+    return s + 1 < BOOK.pages ? [s, s + 1] : [s];
+  }
+
+  function onPage(i, flipped) {
+    cur = i;
+    preload(i, 4);
+    var sp = spread(i);
+    $('pageNum').textContent = (sp.length > 1 ? (sp[0] + 1) + '-' + (sp[1] + 1) : (sp[0] + 1)) + '/' + BOOK.pages;
+    $('slider').value = sp[0] + 1;
+    var atStart = i === 0, atEnd = sp[sp.length - 1] >= BOOK.pages - 1;
+    // 横屏双页模式下，单独显示封面/封底时居中
+    var shift = 0;
+    if (mode === 'landscape' && sp.length === 1) shift = sp[0] === 0 ? -25 : 25;
+    $('bookSizer').style.transform = shift ? 'translateX(' + shift + '%)' : '';
+    updateStacks(sp);
+    $('btnPrev').classList.toggle('is-disabled', atStart);
+    $('btnFirst').classList.toggle('is-disabled', atStart);
+    $('btnNext').classList.toggle('is-disabled', atEnd);
+    $('btnLast').classList.toggle('is-disabled', atEnd);
+    var h = '#p=' + (sp[0] + 1);
+    if (location.hash !== h) history.replaceState(null, '', h);
+    document.querySelectorAll('.thumb.cur').forEach(function (t) { t.classList.remove('cur'); });
+    sp.forEach(function (p) { var t = document.querySelector('.thumb[data-i="' + p + '"]'); if (t) t.classList.add('cur'); });
+    if (flipped) playFlip();
+    if (atEnd && autoTimer) stopAuto();
+  }
+
+  function preload(i, n) {
+    var imgs = document.querySelectorAll('#book img[data-i]');
+    for (var k = Math.max(0, i - n); k <= Math.min(BOOK.pages - 1, i + n + 1); k++) {
+      var img = imgs[k];
+      if (img && !img.getAttribute('src')) img.src = pageSrc(k);
+    }
+  }
+
+  function readHash() {
+    var m = /p=(\d+)/.exec(location.hash);
+    return m ? Math.max(0, Math.min(BOOK.pages - 1, parseInt(m[1], 10) - 1)) : 0;
+  }
+  window.addEventListener('hashchange', function () { if (pf) goTo(readHash()); });
+
+  function goTo(i) {
+    i = Math.max(0, Math.min(BOOK.pages - 1, i));
+    if (!pf) return;
+    var sp = spread(cur);
+    if (sp.indexOf(i) >= 0) return;
+    preload(i, 2);
+    if (Math.abs(i - cur) <= 2) pf.flip(i); else { pf.turnToPage(i); onPage(pf.getCurrentPageIndex(), true); }
+  }
+  function next() { if (pf) pf.flipNext(); }
+  function prev() { if (pf) pf.flipPrev(); }
+
+  /* ---------- 工具栏 ---------- */
+  $('btnPrev').onclick = prev;
+  $('btnNext').onclick = next;
+  $('btnFirst').onclick = function () { goTo(0); };
+  $('btnLast').onclick = function () { goTo(BOOK.pages - 1); };
+  $('btnHome').onclick = function () { goTo(0); };
+  $('btnZoom').onclick = function () { openZoom(); };
+
+  var slider = $('slider'), tip = $('sliderTip');
+  function showTip() {
+    var v = +slider.value, pct = (v - 1) / Math.max(1, BOOK.pages - 1);
+    tip.innerHTML = '<img src="' + thumbSrc(v - 1) + '" alt="">' + v;
+    tip.style.left = (pct * slider.clientWidth) + 'px';
+    tip.style.display = 'block';
+  }
+  slider.addEventListener('input', showTip);
+  slider.addEventListener('change', function () { tip.style.display = 'none'; goTo(+slider.value - 1); });
+  slider.addEventListener('pointerup', function () { tip.style.display = 'none'; });
+
+  function togglePanel(id) {
+    ['thumbPanel', 'searchPanel'].forEach(function (p) { if (p !== id) $(p).hidden = true; });
+    $(id).hidden = !$(id).hidden;
+    $('moreMenu').hidden = true;
+    if (id === 'thumbPanel' && !$(id).hidden) { var c = document.querySelector('.thumb.cur'); if (c) c.scrollIntoView({ block: 'center' }); }
+    if (id === 'searchPanel' && !$(id).hidden) setTimeout(function () { $('searchInput').focus(); }, 50);
+  }
+  $('btnThumbs').onclick = function () { togglePanel('thumbPanel'); };
+  $('btnSearch').onclick = function () { togglePanel('searchPanel'); };
+  $('btnMore').onclick = function (e) { e.stopPropagation(); $('moreMenu').hidden = !$('moreMenu').hidden; };
+  document.addEventListener('click', function (e) { if (!$('moreMenu').contains(e.target)) $('moreMenu').hidden = true; });
+  document.querySelectorAll('[data-close]').forEach(function (b) { b.onclick = function () { $(b.getAttribute('data-close')).hidden = true; }; });
+  document.querySelectorAll('.dlg').forEach(function (d) { d.addEventListener('click', function (e) { if (e.target === d) d.hidden = true; }); });
+
+  $('moreMenu').addEventListener('click', function (e) {
+    var b = e.target.closest('button'); if (!b) return;
+    $('moreMenu').hidden = true;
+    var act = b.getAttribute('data-act');
+    if (act === 'fullscreen') toggleFullscreen();
+    if (act === 'autoplay') autoTimer ? stopAuto() : startAuto();
+    if (act === 'sound') { soundOn = !soundOn; store('eb-sound', soundOn ? '1' : '0'); updateSoundLabel(); toast(soundOn ? '已开启翻页声音' : '已关闭翻页声音'); }
+    if (act === 'share') openShare();
+    if (act === 'install') openInstall();
+    if (act === 'download') { var a = document.createElement('a'); a.href = BOOK.pdf; a.download = BOOK.title + '.pdf'; document.body.appendChild(a); a.click(); a.remove(); }
+  });
+
+  function toggleFullscreen() {
+    var d = document, el = d.documentElement;
+    if (d.fullscreenElement || d.webkitFullscreenElement) (d.exitFullscreen || d.webkitExitFullscreen).call(d);
+    else if (el.requestFullscreen || el.webkitRequestFullscreen) (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+    else toast('当前浏览器不支持全屏');
+  }
+  function startAuto() {
+    if (spread(cur).slice(-1)[0] >= BOOK.pages - 1) goTo(0);
+    autoTimer = setInterval(next, (BOOK.autoplaySeconds || 4) * 1000);
+    $('autoplayLabel').textContent = '停止自动翻页'; toast('自动翻页已开始');
+  }
+  function stopAuto() { clearInterval(autoTimer); autoTimer = null; $('autoplayLabel').textContent = '自动翻页'; }
+  function updateSoundLabel() { $('soundLabel').textContent = '翻页声音：' + (soundOn ? '开' : '关'); }
+
+  /* 翻页声音：用 WebAudio 合成，无需音频文件 */
+  var actx = null;
+  function playFlip() {
+    if (!soundOn) return;
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      if (actx.state === 'suspended') actx.resume();
+      var dur = 0.35, n = Math.floor(actx.sampleRate * dur), buf = actx.createBuffer(1, n, actx.sampleRate), d = buf.getChannelData(0);
+      for (var i = 0; i < n; i++) { var t = i / n; d[i] = (Math.random() * 2 - 1) * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.6)), 2) * (1 - t); }
+      var src = actx.createBufferSource(); src.buffer = buf;
+      var f = actx.createBiquadFilter(); f.type = 'bandpass'; f.frequency.value = 2400; f.Q.value = 0.6;
+      var g = actx.createGain(); g.gain.value = 0.35;
+      src.connect(f); f.connect(g); g.connect(actx.destination); src.start();
+    } catch (e) {}
+  }
+
+  /* 键盘 */
+  document.addEventListener('keydown', function (e) {
+    if (e.target.tagName === 'INPUT') { if (e.key === 'Escape') e.target.blur(); return; }
+    if (!$('zoomLayer').hidden) { if (e.key === 'Escape') closeZoom(); return; }
+    switch (e.key) {
+      case 'ArrowRight': case 'PageDown': case ' ': next(); e.preventDefault(); break;
+      case 'ArrowLeft': case 'PageUp': prev(); e.preventDefault(); break;
+      case 'Home': goTo(0); break;
+      case 'End': goTo(BOOK.pages - 1); break;
+      case 'Escape': ['thumbPanel', 'searchPanel', 'shareDlg', 'installDlg', 'moreMenu'].forEach(function (p) { $(p).hidden = true; }); break;
+    }
+  });
+  /* 桌面滚轮翻页，Ctrl+滚轮放大 */
+  var wheelLock = 0;
+  $('stage').addEventListener('wheel', function (e) {
+    e.preventDefault();
+    if (e.ctrlKey) { if (e.deltaY < 0) openZoom(); return; }
+    var now = Date.now(); if (now - wheelLock < 600 || Math.abs(e.deltaY) < 20) return; wheelLock = now;
+    e.deltaY > 0 ? next() : prev();
+  }, { passive: false });
+  $('stage').addEventListener('dblclick', function (e) { if (e.target.closest('#bookWrap')) openZoom(); });
+
+  /* ---------- 缩略图 ---------- */
+  function buildThumbs() {
+    var g = $('thumbGrid'), html = '';
+    for (var i = 0; i < BOOK.pages; i++) html += '<button class="thumb" data-i="' + i + '"><img loading="lazy" src="' + thumbSrc(i) + '" alt=""><span>' + (i + 1) + '</span></button>';
+    g.innerHTML = html;
+    g.onclick = function (e) {
+      var t = e.target.closest('.thumb'); if (!t) return;
+      goTo(+t.getAttribute('data-i'));
+      if (window.innerWidth < 700) $('thumbPanel').hidden = true;
+    };
+    onPage(cur, false);
+  }
+
+  /* ---------- 搜索 ---------- */
+  $('searchForm').onsubmit = function (e) {
+    e.preventDefault();
+    var q = $('searchInput').value.trim(), out = $('searchResults');
+    if (!q) { out.innerHTML = ''; return; }
+    if (/^\d+$/.test(q)) { goTo(+q - 1); out.innerHTML = '<div class="empty">已跳转到第 ' + Math.min(+q, BOOK.pages) + ' 页</div>'; return; }
+    if (!BOOK.text) { out.innerHTML = '<div class="empty">本书没有文字索引（由图片生成），可输入页码跳转</div>'; return; }
+    var ql = q.toLowerCase(), html = '', count = 0;
+    BOOK.text.forEach(function (txt, i) {
+      if (!txt) return;
+      var idx = txt.toLowerCase().indexOf(ql); if (idx < 0) return;
+      count++;
+      var s = Math.max(0, idx - 30), snip = txt.slice(s, idx + q.length + 60);
+      var hi = esc(snip).replace(new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[&<>"]/g, function (c) { return esc(c); }), 'gi'), function (m) { return '<mark>' + m + '</mark>'; });
+      html += '<button class="sr" data-i="' + i + '"><img src="' + thumbSrc(i) + '" alt=""><div><b>第 ' + (i + 1) + ' 页</b><span>' + (s > 0 ? '…' : '') + hi + '…</span></div></button>';
+    });
+    out.innerHTML = count ? '<div class="empty" style="padding:8px">找到 ' + count + ' 页</div>' + html : '<div class="empty">没有找到“' + esc(q) + '”</div>';
+  };
+  $('searchResults').onclick = function (e) {
+    var b = e.target.closest('.sr'); if (!b) return;
+    goTo(+b.getAttribute('data-i'));
+    if (window.innerWidth < 700) $('searchPanel').hidden = true;
+  };
+
+  /* ---------- 放大 ---------- */
+  var zoom = 2;
+  function openZoom() {
+    var sp = spread(cur), inner = $('zoomInner');
+    inner.innerHTML = sp.map(function (i) { return '<img src="' + pageSrc(i) + '" alt="">'; }).join('');
+    $('zoomLayer').hidden = false;
+    zoom = 2; applyZoom(0.5, 0.5);
+  }
+  function closeZoom() { $('zoomLayer').hidden = true; }
+  function applyZoom(fx, fy) {
+    var sc = $('zoomScroll'), sp = spread(cur).length;
+    var baseH = sc.clientHeight - 40, r = BOOK.width / BOOK.height;
+    var baseW = Math.min(baseH * r, (sc.clientWidth - 40) / sp);
+    var w = Math.round(baseW * zoom);
+    var oldW = sc.scrollWidth, oldH = sc.scrollHeight;
+    var cx = sc.scrollLeft + sc.clientWidth * fx, cy = sc.scrollTop + sc.clientHeight * fy;
+    $('zoomInner').querySelectorAll('img').forEach(function (img) { img.style.width = w + 'px'; img.style.height = Math.round(w / r) + 'px'; });
+    $('zoomVal').textContent = Math.round(zoom * 100) + '%';
+    var nw = sc.scrollWidth, nh = sc.scrollHeight;
+    sc.scrollLeft = cx * nw / oldW - sc.clientWidth * fx;
+    sc.scrollTop = cy * nh / oldH - sc.clientHeight * fy;
+  }
+  function setZoom(z, fx, fy) { zoom = Math.max(1, Math.min(5, z)); applyZoom(fx == null ? 0.5 : fx, fy == null ? 0.5 : fy); }
+  $('zoomIn2').onclick = function () { setZoom(zoom + 0.5); };
+  $('zoomOut').onclick = function () { if (zoom <= 1) closeZoom(); else setZoom(zoom - 0.5); };
+  $('zoomClose').onclick = closeZoom;
+  (function () {
+    var sc = $('zoomScroll'), drag = null, pinch = null;
+    sc.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var r = sc.getBoundingClientRect();
+      if (e.ctrlKey || Math.abs(e.deltaY) > 0) setZoom(zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15), (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+    }, { passive: false });
+    sc.addEventListener('mousedown', function (e) { drag = { x: e.clientX, y: e.clientY, l: sc.scrollLeft, t: sc.scrollTop, moved: false }; sc.classList.add('drag'); e.preventDefault(); });
+    window.addEventListener('mousemove', function (e) { if (!drag) return; var dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true; sc.scrollLeft = drag.l - dx; sc.scrollTop = drag.t - dy; });
+    window.addEventListener('mouseup', function () { if (drag && !drag.moved && !$('zoomLayer').hidden) { /* 单击不关闭，避免误触 */ } drag = null; sc.classList.remove('drag'); });
+    sc.addEventListener('dblclick', closeZoom);
+    function dist(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+    sc.addEventListener('touchstart', function (e) { if (e.touches.length === 2) { pinch = { d: dist(e.touches), z: zoom }; } }, { passive: true });
+    sc.addEventListener('touchmove', function (e) {
+      if (pinch && e.touches.length === 2) {
+        e.preventDefault();
+        var r = sc.getBoundingClientRect(), mx = (e.touches[0].clientX + e.touches[1].clientX) / 2, my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        setZoom(pinch.z * dist(e.touches) / pinch.d, (mx - r.left) / r.width, (my - r.top) / r.height);
+      }
+    }, { passive: false });
+    sc.addEventListener('touchend', function (e) { if (e.touches.length < 2) pinch = null; });
+  })();
+  /* 手机端双指在书上捏合 -> 进入放大 */
+  $('stage').addEventListener('touchstart', function (e) { if (e.touches.length === 2) openZoom(); }, { passive: true });
+
+  /* ---------- 分享 / 二维码 ---------- */
+  function shareUrl() {
+    var u = location.href.split('#')[0];
+    if ($('sharePage').checked) u += '#p=' + (spread(cur)[0] + 1);
+    return u;
+  }
+  function makeQR(text) {
+    var qr = qrcode(0, 'M'); qr.addData(unescape(encodeURIComponent(text)), 'Byte'); qr.make();
+    return qr;
+  }
+  function renderShare() {
+    var url = shareUrl(), qr = makeQR(url), n = qr.getModuleCount(), cell = 8, m = 4;
+    var c = document.createElement('canvas'); c.width = c.height = (n + m * 2) * cell;
+    var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.fillStyle = '#000';
+    for (var r = 0; r < n; r++) for (var k = 0; k < n; k++) if (qr.isDark(r, k)) g.fillRect((k + m) * cell, (r + m) * cell, cell, cell);
+    $('qrBox').innerHTML = ''; $('qrBox').appendChild(c);
+    $('shareUrl').value = url;
+    return c;
+  }
+  function openShare() {
+    $('shareDlg').hidden = false; renderShare();
+    $('nativeShare').hidden = !navigator.share;
+    if (location.protocol === 'file:' || /^(localhost|127\.|192\.168\.|10\.)/.test(location.hostname)) toast('提示：当前是本地地址，发布到网上后二维码才能被手机访问');
+  }
+  $('sharePage').onchange = renderShare;
+  $('copyUrl').onclick = function () {
+    var v = $('shareUrl').value;
+    (navigator.clipboard ? navigator.clipboard.writeText(v) : Promise.reject()).then(function () { toast('链接已复制'); }, function () { $('shareUrl').select(); document.execCommand('copy'); toast('链接已复制'); });
+  };
+  $('saveQr').onclick = function () {
+    var qc = renderShare(), pad = 40, W = qc.width + pad * 2, H = qc.height + pad * 2 + 60;
+    var c = document.createElement('canvas'); c.width = W; c.height = H;
+    var g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, W, H);
+    g.drawImage(qc, pad, pad);
+    g.fillStyle = '#222'; g.font = 'bold 26px sans-serif'; g.textAlign = 'center';
+    var t = BOOK.title; while (g.measureText(t).width > W - 40 && t.length > 2) t = t.slice(0, -2) + '…';
+    g.fillText(t, W / 2, qc.height + pad + 36);
+    g.fillStyle = '#888'; g.font = '18px sans-serif'; g.fillText('扫码阅读', W / 2, qc.height + pad + 64);
+    var a = document.createElement('a'); a.href = c.toDataURL('image/png'); a.download = BOOK.title + '-二维码.png'; document.body.appendChild(a); a.click(); a.remove();
+  };
+  $('nativeShare').onclick = function () { navigator.share({ title: BOOK.title, url: shareUrl() }).catch(function () {}); };
+
+  /* ---------- 安装到手机（PWA） ---------- */
+  window.addEventListener('beforeinstallprompt', function (e) {
+    e.preventDefault(); deferredInstall = e;
+    if (BOOK) maybeShowBar();
+  });
+  window.addEventListener('appinstalled', function () { $('installBar').hidden = true; deferredInstall = null; toast('已安装到主屏幕'); });
+
+  function setupInstall() {
+    if (isStandalone) { $('installItem').hidden = true; return; }
+    maybeShowBar();
+  }
+  function maybeShowBar() {
+    if (isStandalone || store('eb-install-dismiss') === '1') return;
+    var mobile = /android|iphone|ipad|ipod|mobile/i.test(ua) || isIOS;
+    if (!mobile) return;
+    if (deferredInstall || isIOS || isWeChat || isQQ) $('installBar').hidden = false;
+  }
+  $('installLater').onclick = function () { $('installBar').hidden = true; store('eb-install-dismiss', '1'); };
+  $('installNow').onclick = function () { $('installBar').hidden = true; openInstall(); };
+
+  function openInstall() {
+    var body = $('installBody');
+    if (isStandalone) { toast('已经是安装后的应用'); return; }
+    if (deferredInstall) {
+      deferredInstall.prompt();
+      deferredInstall.userChoice.then(function (c) { if (c.outcome === 'accepted') toast('正在安装…'); deferredInstall = null; });
+      return;
+    }
+    if (isWeChat || isQQ) {
+      body.innerHTML = '<p>微信 / QQ 内置浏览器不支持安装。</p><ol><li>点击右上角 <b>···</b></li><li>选择 <b>在浏览器中打开</b>（推荐 Chrome）</li><li>在浏览器中再次点击“安装到手机”</li></ol>';
+    } else if (isIOS) {
+      body.innerHTML = '<p>在 iPhone / iPad 上用 <b>Safari</b> 安装：</p><ol><li>点击底部的 <b>分享</b> 按钮 <span style="font-size:18px">⎋</span></li><li>向下滑动，选择 <b>添加到主屏幕</b></li><li>点击右上角 <b>添加</b></li></ol>';
+    } else if (location.protocol !== 'https:' && !/^(localhost|127\.)/.test(location.hostname)) {
+      body.innerHTML = '<p>安装功能需要 <b>HTTPS</b> 网址。请把电子书发布到 HTTPS 网站（如 GitHub Pages）后再试。</p>';
+    } else {
+      body.innerHTML = '<p>用 <b>Chrome</b> 浏览器安装：</p><ol><li>点击右上角菜单 <b>⋮</b></li><li>选择 <b>添加到主屏幕</b> 或 <b>安装应用</b></li><li>确认 <b>安装</b></li></ol><p style="color:#888;font-size:13px">安装后可像 App 一样从桌面打开，已看过的页面离线也能阅读。</p>';
+    }
+    $('installDlg').hidden = false;
+  }
+})();
