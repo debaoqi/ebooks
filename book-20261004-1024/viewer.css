@@ -1,0 +1,282 @@
+:root{
+  --bg:#555;--bar:rgba(30,30,30,.0);--fg:#fff;--fg-dim:rgba(255,255,255,.7);
+  --panel:#fff;--panel-fg:#222;--line:#e3e3e3;--accent:#3a7af3;
+  --tb-h:32px;   /* 电脑端工具栏较薄；触屏设备见下方媒体查询（40px，便于点按） */
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--fg);
+  font:14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer;padding:0}
+svg{width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+svg .fill{fill:currentColor;stroke:none}
+[hidden]{display:none!important}
+
+#app{position:fixed;inset:0;display:flex;flex-direction:column;
+  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+#loading{position:absolute;inset:0;z-index:50;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--fg-dim)}
+.spinner{width:40px;height:40px;border-radius:50%;border:4px solid rgba(255,255,255,.2);border-left-color:#fff;animation:spin 1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+#stage{position:relative;flex:1;min-height:0}
+/* 画册高度 = 窗口高度 - 60px（与之前的大尺寸相同）；上方留 26px，整体下移，接近页面正中 */
+#bookWrap{position:absolute;inset:26px 40px 2px;display:flex;align-items:center;justify-content:center;touch-action:none}
+/* 由本页完全接管触摸，避免浏览器把斜向滑动当成滚动而中断翻页 */
+.stf__parent{touch-action:none!important;-webkit-user-select:none;user-select:none}
+.stf__item{will-change:transform}
+#bookSizer{flex:none;transition:transform .45s ease}
+#book{width:100%}
+#book .page{background:#fff;overflow:hidden}
+#book .page img{width:100%;height:100%;display:block;object-fit:fill;user-select:none;-webkit-user-drag:none;pointer-events:none}
+#book .page.blank{background:#fff}
+
+/* 书脊阴影 + 纸面反光：强度由 viewer.js 按页面明暗写入 --sa-* / --ha-* */
+#book .page .shade{position:absolute;inset:0;pointer-events:none;z-index:2}
+/* 胶装：书页在书脊处向下弯入，阴影深而宽；紧贴书脊有一道清晰的压痕，弯曲处有纸面反光。
+   画面复杂的图片上，普通的淡阴影会被图案“吃掉”，所以用更深的阴影 + 清晰的折痕线保证效果可见 */
+#book .page.--left .shade{background:
+  linear-gradient(to left, rgba(0,0,0,calc(var(--sa-r,.42) * 1.1)) 0, rgba(0,0,0,calc(var(--sa-r,.42) * .5)) .45%, rgba(0,0,0,0) .9%),
+  linear-gradient(to left,
+    rgba(0,0,0,var(--sa-r,.42)) 0,
+    rgba(0,0,0,calc(var(--sa-r,.42) * .72)) 1.6%,
+    rgba(0,0,0,calc(var(--sa-r,.42) * .38)) 4.5%,
+    rgba(0,0,0,calc(var(--sa-r,.42) * .15)) 9%,
+    rgba(0,0,0,calc(var(--sa-r,.42) * .04)) 13%,
+    rgba(0,0,0,0) 17%),
+  linear-gradient(to left, rgba(255,255,255,0) 4.5%, rgba(255,255,255,var(--ha-r,.16)) 8%, rgba(255,255,255,0) 12.5%),
+  linear-gradient(to right, rgba(0,0,0,.16) 0, rgba(0,0,0,.05) .8%, rgba(0,0,0,0) 2.2%)}
+#book .page.--right .shade{background:
+  linear-gradient(to right, rgba(0,0,0,calc(var(--sa-l,.42) * 1.1)) 0, rgba(0,0,0,calc(var(--sa-l,.42) * .5)) .45%, rgba(0,0,0,0) .9%),
+  linear-gradient(to right,
+    rgba(0,0,0,var(--sa-l,.42)) 0,
+    rgba(0,0,0,calc(var(--sa-l,.42) * .68)) 1.4%,
+    rgba(0,0,0,calc(var(--sa-l,.42) * .34)) 4%,
+    rgba(0,0,0,calc(var(--sa-l,.42) * .13)) 8%,
+    rgba(0,0,0,calc(var(--sa-l,.42) * .03)) 12%,
+    rgba(0,0,0,0) 15%),
+  linear-gradient(to right, rgba(255,255,255,0) 4%, rgba(255,255,255,var(--ha-l,.16)) 7%, rgba(255,255,255,0) 11%),
+  linear-gradient(to left, rgba(0,0,0,.16) 0, rgba(0,0,0,.05) .8%, rgba(0,0,0,0) 2.2%)}
+/* 单页（手机竖屏）模式：书脊在左侧，同样要看得出装订 */
+.stf__wrapper.--portrait .page.--right .shade{opacity:.9}
+/* 合上的书：封面 / 封底改用“精装书封皮”效果——书脊一侧阴影 + 压痕，外缘轻微压暗，整本书有投影；只用暗色，不出现白线 */
+#bookSizer.closed .page.--right .shade.edge{opacity:1;background:
+  linear-gradient(to right,
+    rgba(0,0,0,.50) 0,
+    rgba(0,0,0,.22) 1%,
+    rgba(0,0,0,.06) 2.4%,
+    rgba(0,0,0,.26) 3.4%,
+    rgba(0,0,0,.08) 4.4%,
+    rgba(0,0,0,.02) 6.5%,
+    rgba(0,0,0,0) 9%),
+  linear-gradient(to left, rgba(0,0,0,.16) 0, rgba(0,0,0,.04) 1%, rgba(0,0,0,0) 2.5%),
+  linear-gradient(to bottom, rgba(0,0,0,.10) 0, rgba(0,0,0,0) 1.2%, rgba(0,0,0,0) 98.5%, rgba(0,0,0,.14) 100%)}
+#bookSizer.closed .page.--left .shade.edge{opacity:1;background:
+  linear-gradient(to left,
+    rgba(0,0,0,.50) 0,
+    rgba(0,0,0,.22) 1%,
+    rgba(0,0,0,.06) 2.4%,
+    rgba(0,0,0,.26) 3.4%,
+    rgba(0,0,0,.08) 4.4%,
+    rgba(0,0,0,.02) 6.5%,
+    rgba(0,0,0,0) 9%),
+  linear-gradient(to right, rgba(0,0,0,.16) 0, rgba(0,0,0,.04) 1%, rgba(0,0,0,0) 2.5%),
+  linear-gradient(to bottom, rgba(0,0,0,.10) 0, rgba(0,0,0,0) 1.2%, rgba(0,0,0,0) 98.5%, rgba(0,0,0,.14) 100%)}
+#bookSizer.closed .stf__item.--simple{box-shadow:0 14px 30px -8px rgba(0,0,0,.65),0 4px 10px rgba(0,0,0,.35)}
+.stf__item{transition:box-shadow .3s}
+
+/* ===== 骑马订（.bind-saddle）：对折小册子，书脊是柔和的折痕，没有压痕；中间跨页可见订书钉 ===== */
+/* 翻开时：纸张摊得更平，中缝阴影更浅更窄，没有精装书的反光 */
+/* 骑马订翻开：对折纸的中缝——一道细而清楚的折痕 + 折痕旁的一条亮边（纸张拱起），阴影比胶装窄 */
+.bind-saddle #book .page.--left .shade{background:
+  linear-gradient(to left, rgba(0,0,0,calc(var(--sa-r,.42) * .95)) 0, rgba(0,0,0,calc(var(--sa-r,.42) * .35)) .35%, rgba(0,0,0,0) .7%),
+  linear-gradient(to left, rgba(255,255,255,0) .7%, rgba(255,255,255,calc(var(--ha-r,.16) * 1.4)) 1.5%, rgba(255,255,255,0) 3%),
+  linear-gradient(to left,
+    rgba(0,0,0,calc(var(--sa-r,.42) * .55)) 0,
+    rgba(0,0,0,calc(var(--sa-r,.42) * .3)) 2.5%,
+    rgba(0,0,0,calc(var(--sa-r,.42) * .1)) 5.5%,
+    rgba(0,0,0,0) 9%),
+  linear-gradient(to right, rgba(0,0,0,.12) 0, rgba(0,0,0,0) 1.6%)}
+.bind-saddle #book .page.--right .shade{background:
+  linear-gradient(to right, rgba(0,0,0,calc(var(--sa-l,.42) * .95)) 0, rgba(0,0,0,calc(var(--sa-l,.42) * .35)) .35%, rgba(0,0,0,0) .7%),
+  linear-gradient(to right, rgba(255,255,255,0) .7%, rgba(255,255,255,calc(var(--ha-l,.16) * 1.4)) 1.5%, rgba(255,255,255,0) 3%),
+  linear-gradient(to right,
+    rgba(0,0,0,calc(var(--sa-l,.42) * .55)) 0,
+    rgba(0,0,0,calc(var(--sa-l,.42) * .3)) 2.5%,
+    rgba(0,0,0,calc(var(--sa-l,.42) * .1)) 5.5%,
+    rgba(0,0,0,0) 9%),
+  linear-gradient(to left, rgba(0,0,0,.12) 0, rgba(0,0,0,0) 1.6%)}
+/* 合上时：封面书脊是一道柔和折痕 + 书脊边缘露出两个订书钉；投影较浅（书薄） */
+.bind-saddle #bookSizer.closed .page.--right .shade.edge{background:
+  linear-gradient(to right, rgba(0,0,0,.30) 0, rgba(0,0,0,.14) .8%, rgba(0,0,0,.05) 2.2%, rgba(0,0,0,0) 5%),
+  linear-gradient(to left, rgba(0,0,0,.10) 0, rgba(0,0,0,0) 1.5%),
+  linear-gradient(to bottom, rgba(0,0,0,.06) 0, rgba(0,0,0,0) 1%, rgba(0,0,0,0) 99%, rgba(0,0,0,.08) 100%)}
+.bind-saddle #bookSizer.closed .page.--left .shade.edge{background:
+  linear-gradient(to left, rgba(0,0,0,.30) 0, rgba(0,0,0,.14) .8%, rgba(0,0,0,.05) 2.2%, rgba(0,0,0,0) 5%),
+  linear-gradient(to right, rgba(0,0,0,.10) 0, rgba(0,0,0,0) 1.5%),
+  linear-gradient(to bottom, rgba(0,0,0,.06) 0, rgba(0,0,0,0) 1%, rgba(0,0,0,0) 99%, rgba(0,0,0,.08) 100%)}
+.bind-saddle #bookSizer.closed .shade.edge::before,
+.bind-saddle #bookSizer.closed .shade.edge::after{content:"";position:absolute;width:3px;height:7%;border-radius:1.5px;
+  background:linear-gradient(to right,#7d828a,#eef1f4 45%,#a9aeb5 65%,#666b73);box-shadow:0 1px 2px rgba(0,0,0,.45)}
+.bind-saddle #bookSizer.closed .shade.edge::before{top:24%}
+.bind-saddle #bookSizer.closed .shade.edge::after{top:69%}
+.bind-saddle #bookSizer.closed .page.--right .shade.edge::before,
+.bind-saddle #bookSizer.closed .page.--right .shade.edge::after{left:0}
+.bind-saddle #bookSizer.closed .page.--left .shade.edge::before,
+.bind-saddle #bookSizer.closed .page.--left .shade.edge::after{right:0}
+.bind-saddle #bookSizer.closed .stf__item.--simple{box-shadow:0 8px 18px -6px rgba(0,0,0,.5),0 2px 5px rgba(0,0,0,.28)}
+/* 中间跨页的订书钉（穿过中缝，弯折的钉脚沿中缝方向） */
+.staples{position:absolute;top:0;bottom:0;width:0;z-index:5;pointer-events:none;transition:opacity .15s}
+.staples.moving{opacity:0}
+.staples.mid{left:50%}.staples.at-left{left:0}.staples.at-right{left:100%}
+.staples i{position:absolute;left:-2px;width:4px;height:7%;border-radius:2px;
+  background:linear-gradient(to right,#6f747c,#f2f4f7 42%,#b3b8bf 62%,#5f646c);
+  box-shadow:0 1px 2px rgba(0,0,0,.5),0 0 0 .5px rgba(0,0,0,.25)}
+.staples i:first-child{top:24%}.staples i:last-child{top:69%}
+.staples.at-left i{left:0}.staples.at-right i{left:-4px}
+
+/* 两侧书页厚度 */
+#bookSizer{position:relative}
+.stack{position:absolute;top:2px;bottom:2px;width:0;transition:width .3s ease;pointer-events:none;
+  background:repeating-linear-gradient(to right,#fdfdfd 0 1px,#cfcfcf 1px 2px);box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.stack.off{display:none}
+.stack.l{right:100%;border-radius:2px 0 0 2px}
+.stack.r{left:100%;border-radius:0 2px 2px 0}
+.stf__parent{margin:0 auto}
+
+.nav-arrow{position:absolute;top:50%;transform:translateY(-50%);width:38px;height:80px;color:rgba(255,255,255,.85);display:flex;align-items:center;justify-content:center;opacity:.8;transition:opacity .2s}
+.nav-arrow:hover{opacity:1}
+.nav-arrow svg{width:34px;height:34px;stroke-width:1.5}
+.nav-arrow.prev{left:1px}.nav-arrow.next{right:1px}
+.nav-end{position:absolute;bottom:10%;width:32px;height:32px;color:rgba(255,255,255,.55);display:flex;align-items:center;justify-content:center}
+.nav-end:hover{color:#fff}
+.nav-end svg{width:16px;height:16px}
+.nav-end.first{left:10px}.nav-end.last{right:10px}
+.is-disabled{opacity:.15!important;pointer-events:none}
+
+#toolbar{height:var(--tb-h);flex:none;display:flex;align-items:center;gap:6px;padding:0 14px}
+.tb{width:30px;height:30px;display:flex;align-items:center;justify-content:center;border-radius:8px;color:var(--fg)}
+.tb:hover,.tb.on{background:rgba(255,255,255,.14)}
+/* 中英文切换按钮：显示“要切换到的语言” */
+.tb.lang{width:auto;min-width:30px;padding:0 6px;font-size:12px;font-weight:700;letter-spacing:.5px;border:1px solid rgba(255,255,255,.45);border-radius:6px;height:22px;margin:0 2px}
+.tb.lang:hover{border-color:#fff}
+#pageNum{min-width:64px;text-align:center;font-size:12px;font-variant-numeric:tabular-nums}
+#sliderWrap{flex:1;position:relative;display:flex;align-items:center;margin:0 10px}
+#slider{width:100%;-webkit-appearance:none;appearance:none;background:transparent;height:24px;margin:0}
+#slider::-webkit-slider-runnable-track{height:2px;background:rgba(255,255,255,.75)}
+#slider::-moz-range-track{height:2px;background:rgba(255,255,255,.75)}
+#slider::-webkit-slider-thumb{-webkit-appearance:none;width:12px;height:12px;border-radius:50%;background:#fff;margin-top:-5px}
+#slider::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:#fff;border:0}
+#sliderTip{position:absolute;bottom:30px;transform:translateX(-50%);background:#fff;border-radius:6px;padding:4px;box-shadow:0 4px 16px rgba(0,0,0,.35);display:none;pointer-events:none;color:#333;text-align:center;font-size:12px}
+#sliderTip img{display:block;max-width:120px;max-height:120px;margin-bottom:2px}
+
+.popmenu{position:absolute;right:12px;bottom:calc(var(--tb-h) + 6px + env(safe-area-inset-bottom));z-index:30;background:var(--panel);color:var(--panel-fg);border-radius:10px;padding:6px;min-width:190px;box-shadow:0 8px 30px rgba(0,0,0,.35)}
+.popmenu button{display:flex;align-items:center;gap:10px;width:100%;padding:10px 12px;border-radius:6px;text-align:left}
+.popmenu button:hover{background:#f0f2f5}
+
+.panel{position:absolute;top:0;bottom:calc(var(--tb-h) + env(safe-area-inset-bottom));right:0;z-index:40;width:min(340px,100%);background:var(--panel);color:var(--panel-fg);display:flex;flex-direction:column;box-shadow:-8px 0 30px rgba(0,0,0,.3);animation:slideIn .2s ease-out}
+@keyframes slideIn{from{transform:translateX(100%)}to{transform:none}}
+.panel-head{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid var(--line);flex:none}
+.close{font-size:24px;line-height:1;width:32px;height:32px;border-radius:6px;color:#888}
+.close:hover{background:#f0f2f5;color:#222}
+#thumbGrid{flex:1;overflow:auto;display:grid;grid-template-columns:repeat(2,1fr);gap:14px;padding:14px 16px 24px;align-content:start}
+.thumb{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:12px;color:#666}
+.thumb img{width:100%;border:2px solid transparent;border-radius:3px;box-shadow:0 1px 4px rgba(0,0,0,.2);background:#eee;aspect-ratio:var(--ratio)}
+.thumb.cur img{border-color:var(--accent)}
+.thumb.cur{color:var(--accent);font-weight:600}
+#searchForm{display:flex;gap:8px;padding:12px 16px;flex:none}
+#searchInput{flex:1;min-width:0;padding:8px 10px;border:1px solid #ccc;border-radius:6px;font:inherit}
+#searchForm button{padding:0 14px;border-radius:6px;background:var(--accent);color:#fff}
+#searchResults{flex:1;overflow:auto;padding:0 8px 20px}
+.sr{display:flex;gap:10px;width:100%;text-align:left;padding:10px 8px;border-radius:6px;border-bottom:1px solid #f0f0f0}
+.sr:hover{background:#f5f7fa}
+.sr img{width:48px;flex:none;box-shadow:0 1px 3px rgba(0,0,0,.2)}
+.sr b{display:block;font-size:12px;color:var(--accent);margin-bottom:2px}
+.sr span{font-size:13px;color:#444;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.sr mark{background:#ffe066;color:inherit}
+.empty{padding:24px 16px;color:#999;text-align:center}
+
+.dlg{position:absolute;inset:0;z-index:60;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px}
+.dlg-box{position:relative;background:#fff;color:#222;border-radius:14px;padding:22px 22px 18px;width:min(340px,100%);text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.dlg-box .close{position:absolute;top:8px;right:8px}
+.dlg-box h3{margin:0 0 12px;font-size:17px}
+#qrBox{display:flex;justify-content:center}
+#qrBox img,#qrBox canvas{width:220px;height:220px;image-rendering:pixelated}
+#shareUrl{width:100%;margin-top:10px;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:12px;color:#555;text-align:center}
+.chk{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:8px;font-size:13px;color:#555}
+.dlg-btns{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}
+.dlg-btns button{flex:1;padding:9px 6px;border-radius:8px;background:#f0f2f5;white-space:nowrap}
+.dlg-btns button:first-child{background:var(--accent);color:#fff}
+#installBody{text-align:left;font-size:14px;color:#444;line-height:1.7}
+#installBody ol{padding-left:20px;margin:8px 0}
+#installBody .big{display:block;width:100%;padding:11px;border-radius:8px;background:var(--accent);color:#fff;text-align:center;margin-top:10px}
+
+#installBar{position:absolute;left:50%;transform:translateX(-50%);top:calc(10px + env(safe-area-inset-top));z-index:45;background:#fff;color:#222;border-radius:12px;padding:8px 8px 8px 10px;display:flex;align-items:center;gap:10px;box-shadow:0 8px 30px rgba(0,0,0,.35);width:min(440px,calc(100% - 24px));font-size:13px}
+#installBar img{width:36px;height:36px;border-radius:8px}
+#installBar span{flex:1}
+#installNow{background:var(--accent);color:#fff;padding:7px 14px;border-radius:8px;white-space:nowrap}
+#installLater{font-size:20px;color:#999;width:28px}
+
+#zoomLayer{position:absolute;inset:0;z-index:35;background:var(--bg)}
+#zoomScroll{position:absolute;inset:0;overflow:auto;touch-action:pan-x pan-y;cursor:grab}
+#zoomScroll.drag{cursor:grabbing}
+#zoomInner{display:flex;margin:auto;padding:20px;width:max-content}
+#zoomInner img{display:block;box-shadow:0 4px 20px rgba(0,0,0,.4);user-select:none;-webkit-user-drag:none}
+.zoom-ctrl{position:absolute;bottom:calc(14px + env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:4px;background:rgba(0,0,0,.65);border-radius:24px;padding:4px 8px}
+.zoom-ctrl button{width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:50%}
+.zoom-ctrl button:hover{background:rgba(255,255,255,.15)}
+#zoomVal{min-width:48px;text-align:center;font-size:12px}
+
+#toast{position:absolute;left:50%;bottom:calc(var(--tb-h) + 20px);transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;padding:8px 16px;border-radius:20px;font-size:13px;opacity:0;transition:opacity .25s;pointer-events:none;z-index:70;white-space:nowrap}
+#toast.show{opacity:1}
+
+/* 手机 / 触屏：画册占满可用区域，箭头和书页厚度不占位（直接在书上滑动或点击翻页） */
+@media (pointer:coarse), (max-width:640px){
+  :root{--tb-h:40px}
+  .tb{width:34px;height:34px}
+  #bookWrap{inset:12px 0 4px}
+  .nav-arrow,.nav-end{display:none}
+  /* 书页厚度在手机上也显示（更窄），装订效果更明显；排版时已为它预留两侧空间 */
+}
+@media (max-height:500px){
+  #bookWrap{inset:14px 40px 2px}
+}
+@media (max-height:500px) and (pointer:coarse){
+  #bookWrap{inset:8px 0 2px}
+}
+@media (max-width:640px){
+  .nav-end{display:none}
+  #toolbar{gap:2px;padding:0 6px}
+  #sliderWrap{margin:0 6px}
+  #pageNum{min-width:52px}
+  #thumbGrid{grid-template-columns:repeat(3,1fr);gap:10px}
+}
+
+/* ================= 挂历模式（顶部装订，上下翻页） =================
+   .cal-area 是显示区域；.cal-rot 里是旋转 90° 的书本（与书本模式同一个翻页引擎，同样的卷纸和阴影） */
+.cal2{position:relative;padding-top:var(--bind,24px);user-select:none;-webkit-user-select:none}
+.cal-area{position:relative;box-shadow:0 18px 40px -12px rgba(0,0,0,.55),0 4px 12px rgba(0,0,0,.3)}
+.cal-rot{position:absolute;transform:rotate(90deg);transform-origin:50% 50%}
+.cal-rot #book{width:100%}
+/* 页面图片反向旋转 90°（旋转前页面 = 宽 Hd、高 Wd；图片需为宽 Wd、高 Hd） */
+#book.calrot .page img{position:absolute;width:calc(100% * var(--ir,1));height:calc(100% / var(--ir,1));
+  left:calc((100% - 100% * var(--ir,1)) / 2);top:calc((100% - 100% / var(--ir,1)) / 2);transform:rotate(-90deg);object-fit:fill}
+/* 装订孔：旋转前在页面左边缘（显示时在顶部），随页面一起卷起 */
+#book.calrot .page::before{content:"";position:absolute;left:0;top:0;bottom:0;width:calc(var(--bind,24px) * .55);z-index:3;pointer-events:none;
+  background:radial-gradient(ellipse calc(var(--bind,24px) * .16) calc(var(--gap,26px) * .15) at 45% 50%,#262626 62%,rgba(0,0,0,0) 74%) 0 0/100% var(--gap,26px) repeat-y}
+/* 顶部线圈下的阴影（旋转前 = 左边缘），底边轻微压暗 */
+#book.calrot .page .shade,#book.calrot .page.--right .shade,#book.calrot .page.--left .shade{opacity:1!important;background:
+  linear-gradient(to right,rgba(0,0,0,.17),rgba(0,0,0,.05) 2.5%,rgba(0,0,0,0) 6%),
+  linear-gradient(to left,rgba(0,0,0,.07),rgba(0,0,0,0) 1.5%)}
+/* 底部书页厚度 */
+.cal-stack{position:absolute;left:3px;right:3px;top:100%;height:0;z-index:0;border-radius:0 0 2px 2px;
+  background:repeating-linear-gradient(to bottom,#fdfdfd 0 1px,#cfcfcf 1px 2px);box-shadow:0 3px 6px rgba(0,0,0,.35);transition:height .3s}
+/* 金属线圈 + 中间挂钩 */
+.cal-binding{position:absolute;left:0;right:0;top:0;height:calc(var(--bind,24px) * 1.22);z-index:60;pointer-events:none}
+.cal-rings i{position:absolute;top:0;width:max(3px,calc(var(--gap,26px) * .16));height:100%;transform:translateX(-50%);border-radius:99px;
+  background:linear-gradient(to right,#6f747c,#f4f6f8 45%,#a8adb4 65%,#5c6168);box-shadow:0 2px 3px rgba(0,0,0,.45)}
+.cal-hanger{position:absolute;left:50%;top:calc(var(--bind,24px) * -.35);width:calc(var(--gap,26px) * 1.6);height:calc(var(--bind,24px) * .95);transform:translateX(-50%);
+  border:max(2px,calc(var(--gap,26px) * .1)) solid #8c9199;border-bottom:0;border-radius:50% 50% 0 0/80% 80% 0 0;filter:drop-shadow(0 1px 1px rgba(0,0,0,.4))}
+/* 挂历模式：翻页箭头改为上 / 下 */
+.layout-calendar .nav-arrow svg{transform:rotate(90deg)}
+/* 翻起的纸张背面：空白纸（引擎临时复制的页面） */
+#book.calrot .page.flap-copy{background:linear-gradient(to right,#e6e6e2,#f4f4f1 25%,#fbfbf9)}
+#book.calrot .page.flap-copy > img,#book.calrot .page.flap-copy::before{visibility:hidden}
